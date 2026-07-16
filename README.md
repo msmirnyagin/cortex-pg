@@ -46,7 +46,7 @@
 | **Графы / API** | `pg_net` *(Stage 2)* | — | асинхронные HTTP (webhooks) |
 | **Безопасность** | `pgcrypto` | contrib | digest/hmac, bcrypt, PGP |
 | **Безопасность** | `pg_jsonschema` *(Stage 2)* | — | `json_matches_schema()` |
-| **Безопасность** | `pgsodium`, `supabase_vault` *(Stage 2)* | — | TCE-шифрование, vault секретов |
+| **Безопасность** | `supabase_vault` *(Stage 2)* | source (C) | шифрованное хранилище секретов (vault.secrets) |
 | **Оркестрация** | `pg_cron` | apt (PGDG) | cron-задачи внутри БД |
 | **Оркестрация** | `pg_durable` | .deb (Microsoft) | durable-функции/агенты |
 | **Оркестрация** | `pgmq` *(Stage 2)* | — | SQL-очередь (брокер для агентов) |
@@ -56,9 +56,11 @@
 
 ### Источники установки
 
-Все расширения установлены. По способу установки: `.deb` (pg_durable, pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net, pgsodium, supabase_vault), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pg_jsonschema, pg_graphql), pip (baml-py).
+Все расширения установлены. По способу установки: `.deb` (pg_durable, pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net, supabase_vault), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pg_jsonschema, pg_graphql), pip (baml-py).
 
-> **pgsodium:** для работы TCE/vault требует корневой ключ. Образ содержит getkey-скрипт, который генерирует ключ при первом старте и хранит его в PGDATA (`$PGDATA/pgsodium.key`). Ключ персистентен в рамках одного data-тома — при пересоздании тома генерируется новый.
+> **supabase_vault:** для шифрования секретов требует корневой ключ. Образ содержит getkey-скрипт, который генерирует HEX-ключ (32 байта) при первом старте и хранит его в PGDATA (`$PGDATA/vault_root.key`). Ключ грузится при старте **только** если `supabase_vault` в `shared_preload_libraries` (иначе `_PG_init` не выполнит загрузку ключа). Ключ персистентен в рамках одного data-тома — при пересоздании тома генерируется новый.
+>
+> `pgsodium` намеренно убран (Supabase не рекомендует новые инсталляции, deprecated). Vault v0.3.1 самодостаточен: C/PGXS, линкует libsodium напрямую, не зависит от pgsodium.
 
 ---
 
@@ -71,7 +73,7 @@
 | `shared_buffers` | 192 МБ | 512 МБ |
 | `max_connections` | 12 | 25 |
 | Параллелизм | выкл (1 CPU) | 2 воркера на gather |
-| `shared_preload_libraries` | `pgsodium` | `pg_cron, pg_durable, pg_search, pgsodium, pg_net` |
+| `shared_preload_libraries` | `supabase_vault` | `pg_cron, pg_durable, pg_search, supabase_vault, pg_net` |
 | Назначение | эконом-режим, оркестрация в приложении | полный стек |
 
 На обоих tier-ах поверх Postgres **обязательно** поднимается PgBouncer (transaction-mode), чтобы защитить сервер от коннект-штормов агентов.
@@ -143,7 +145,7 @@ cortex-pg/
 ├── sql/
 │   ├── 00-base.sql            # contrib: pgcrypto, pg_trgm, btree_gin/gist...
 │   ├── 01-vectors.sql         # vector → pg_turboquant (порядок критичен!)
-│   ├── 02-validation-security.sql  # pgsodium, vault, jsonschema
+│   ├── 02-validation-security.sql  # vault, jsonschema (pgsodium убран)
 │   ├── 03-search.sql          # pgroonga, pg_search, rum
 │   ├── 04-graph-api-net.sql   # age, pg_graphql, pg_net, http
 │   ├── 05-orchestration-tuning.sql # pg_cron, pgmq, pg_durable, hint_plan
@@ -182,10 +184,10 @@ docker build --build-arg CORTEX_TIER=min -t cortex-pg:min .
 ## Roadmap
 
 - [x] **Stage 1** — надёжная база: apt + source + `.deb`, CI зелёный
-- [x] **Stage 2** — pgrx/Rust-расширения (pgsodium, vault, pg_jsonschema, pg_graphql) + pg_search/pgmq/pg_net/index_advisor; preload восстановлен
+- [x] **Stage 2** — pgrx/Rust (pg_jsonschema, pg_graphql) + pg_search/pgmq/pg_net/index_advisor/vault; preload восстановлен
+- [x] **Тесты** — smoke-тест в CI: старт контейнера + проверка расширений + раунд-трип vault.create_secret
 - [ ] **arm64** — source-build `pg_durable`/`pg_search` для локальной разработки на Apple Silicon
 - [ ] ** HEALTHCHECK + docker-compose** — готовый compose с PgBouncer sidecar
-- [ ] **Тесты** — smoke-тест расширений в CI после сборки
 
 ---
 

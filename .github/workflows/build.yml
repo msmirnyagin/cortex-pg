@@ -71,7 +71,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test (boot + расширения + pgsodium)
+      - name: Smoke test (boot + расширения + vault)
         run: |
           set -euo pipefail
           docker run -d --name smoke \
@@ -79,7 +79,7 @@ jobs:
             cortex-pg:smoke
 
           # pg_isready зелёный ⇒ postgres поднялся ⇒ все shared_preload_libraries
-          # (.so) загрузились, включая pgsodium + getkey_script.
+          # (.so) загрузились, включая supabase_vault + vault.getkey_script.
           echo "Ожидание готовности postgres (таймаут 120с)..."
           if ! timeout 120 bash -c 'until docker exec smoke pg_isready -U postgres -d postgres >/dev/null 2>&1; do sleep 2; done'; then
             echo "❌ postgres не стартовал за 120с. Логи контейнера:"
@@ -95,15 +95,22 @@ jobs:
           echo "== assertions =="
           EXT_COUNT=$(docker exec smoke psql -U postgres -d postgres -tAc \
             "SELECT count(*) FROM pg_extension WHERE extname IN \
-             ('vector','pg_turboquant','age','pgsodium','pg_search','pgmq','rum',\
+             ('vector','pg_turboquant','age','pg_search','pgmq','rum',\
               'pg_net','index_advisor','supabase_vault','pg_jsonschema','pg_graphql')")
           echo "расширений из ядpa: $EXT_COUNT (нужно >= 9)"
           [ "$EXT_COUNT" -ge 9 ] || { echo "❌ слишком мало расширений создалось"; docker logs smoke --tail 50 || true; exit 1; }
 
-          PGSODIUM_SCHEMA=$(docker exec smoke psql -U postgres -d postgres -tAc \
-            "SELECT count(*) FROM information_schema.schemata WHERE schema_name='pgsodium'")
-          echo "pgsodium schema: $PGSODIUM_SCHEMA"
-          [ "$PGSODIUM_SCHEMA" -eq 1 ] || { echo "❌ pgsodium schema не создан (TCE/vault не работают)"; exit 1; }
+          VAULT_SCHEMA=$(docker exec smoke psql -U postgres -d postgres -tAc \
+            "SELECT count(*) FROM information_schema.schemata WHERE schema_name='vault'")
+          echo "vault schema: $VAULT_SCHEMA"
+          [ "$VAULT_SCHEMA" -eq 1 ] || { echo "❌ vault schema не создан (шифрование секретов не работает)"; exit 1; }
+
+          # Проверяем что корневой ключ реально загружен (vault поднят из preload).
+          # vault.create_secret шифрует через загруженный ключ — если ключа нет, упадёт.
+          docker exec smoke psql -U postgres -d postgres -tAc \
+            "SELECT vault.create_secret('smoke-test-secret', 'smoke')" >/dev/null \
+            || { echo "❌ vault.create_secret не работает — корневой ключ не загружен (preload/getkey)"; docker logs smoke --tail 50 || true; exit 1; }
+          echo "✓ vault шифрует секреты (корневой ключ загружен)"
 
           echo "✓ smoke-тест пройден"
           docker stop smoke || true

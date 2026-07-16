@@ -7,7 +7,7 @@
 # Полный стек расширений (методы сборки ВЕРИФИЦИРОВАНЫ по Cargo.toml/Makefile):
 #   • apt/PGDG:      age, pg_cron, hypopg, http, pg_hint_plan, rum, plpython3
 #   • apt/Groonga:   pgroonga
-#   • source C/PGXS: pgvector v0.8.1, pg_turboquant, pg_net, pgsodium, supabase_vault
+#   • source C/PGXS: pgvector v0.8.1, pg_turboquant, pg_net, supabase_vault
 #   • .deb:          pg_durable (Microsoft), pg_search (ParadeDB)
 #   • SQL/PGXS:      pgmq, index_advisor
 #   • pgrx/Rust:     pg_jsonschema, pg_graphql   ← только эти 2
@@ -15,15 +15,16 @@
 #
 # ПОРЯДОК СБОРКИ: лёгкое → тяжёлое (ради кеширования слоёв GHA).
 #   1-6   apt / .deb / SQL / pip   — быстрые, надёжные
-#   7-11  C/PGXS                   — pgvector, turboquant, pg_net, pgsodium, vault
-#   12-14 Rust/pgrx                — pg_jsonschema, pg_graphql (самый тяжёлый блок)
+#   7-10  C/PGXS                   — pgvector, turboquant, pg_net, vault
+#   11-13 Rust/pgrx                — pg_jsonschema, pg_graphql (самый тяжёлый блок)
 #
 # pgrx: pg_jsonschema=0.16.0, pg_graphql==0.16.1 → cargo-pgrx ПИН к 0.16.1.
 #   (cargo-pgrx latest=0.19.1 НЕсовместим с lib 0.16.x — без пина сборка упадёт.)
 #
-# ПРИМЕЧАНИЕ: pgsodium помечен Supabase как deprecated, но оставлен — он
-#   единственный даёт SQL-API для TCE (transparent column encryption). vault
-#   v0.3.1 больше НЕ зависит от pgsodium (линкует libsodium сам, vendored crypto).
+# КРИПТО: pgsodium УБРАН (Supabase не рекомендует, deprecated). Секреты — через
+#   supabase_vault v0.3.1 (C/PGXS, самодостаточен, НЕ зависит от pgsodium).
+#   vault грузит корневой ключ через vault.getkey_script (HEX, 32 байта) при
+#   старте → скрипт обязан быть в образе и в shared_preload_libraries.
 #
 FROM postgres:17-bookworm
 
@@ -59,7 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # --- Python: BAML (baml-py) вызывается из тел функций plpython3u ---
       python3 \
       python3-pip \
-      # --- libsodium: pgsodium + supabase_vault (C, SHLIB_LINK=-lsodium) ---
+      # --- libsodium: supabase_vault (C, SHLIB_LINK=-lsodium) ---
       libsodium-dev \
       # --- libcurl: pg_net (background worker) ---
       libcurl4-openssl-dev \
@@ -140,16 +141,9 @@ RUN git clone --depth 1 https://github.com/supabase/pg_net.git \
     && cd pg_net && make && make install && cd .. && rm -rf pg_net
 
 # ----------------------------------------------------------------------------
-# 10. pgsodium — крипто-ядро (C/PGXS + libsodium). SQL-API для TCE.
-#     Стандартный PGXS: MODULE_big=pgsodium, SHLIB_LINK=-lsodium.
-#     Требует shared_preload_libraries='pgsodium' + getkey_script (секция 15).
-# ----------------------------------------------------------------------------
-RUN git clone --depth 1 https://github.com/michelp/pgsodium.git \
-    && cd pgsodium && make && make install && cd .. && rm -rf pgsodium
-
-# ----------------------------------------------------------------------------
-# 11. supabase_vault — секреты (C/PGXS + libsodium). НЕ pgrx, НЕ зависит от pgsodium.
+# 10. supabase_vault — секреты (C/PGXS + libsodium). НЕ pgrx, НЕ зависит от pgsodium.
 #     v0.3.1: SHLIB_LINK=-lsodium, vendored crypto (crypto_aead_det_xchacha20).
+#     pgsodium убран (Supabase deprecated); vault — самостоятельное хранилище секретов.
 # ----------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/supabase/vault.git \
     && cd vault && make && make install && cd .. && rm -rf vault
@@ -159,7 +153,7 @@ RUN git clone --depth 1 https://github.com/supabase/vault.git \
 # ============================================================================
 
 # ----------------------------------------------------------------------------
-# 12. Rust/pgrx-тулчейн.
+# 11. Rust/pgrx-тулчейн.
 #     bookworm rustc слишком стар для pgrx → свежий stable через rustup.
 #     cargo-pgrx ПИН к 0.16.1: pg_jsonschema=pgrx 0.16.0, pg_graphql==pgrx 0.16.1.
 #     (latest cargo-pgrx=0.19.1 несовместим с lib 0.16.x.)
@@ -171,7 +165,7 @@ RUN cargo install --locked cargo-pgrx@0.16.1 \
     && cargo pgrx init --pg17=/usr/lib/postgresql/17/bin/pg_config
 
 # ----------------------------------------------------------------------------
-# 13. pg_jsonschema — JSON Schema валидация (pgrx 0.16.0).
+# 12. pg_jsonschema — JSON Schema валидация (pgrx 0.16.0).
 # ----------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/supabase/pg_jsonschema.git \
     && cd pg_jsonschema \
@@ -179,7 +173,7 @@ RUN git clone --depth 1 https://github.com/supabase/pg_jsonschema.git \
     && cd .. && rm -rf pg_jsonschema
 
 # ----------------------------------------------------------------------------
-# 14. pg_graphql — GraphQL резолвер (pgrx =0.16.1, edition 2024).
+# 13. pg_graphql — GraphQL резолвер (pgrx =0.16.1, edition 2024).
 # ----------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/supabase/pg_graphql.git \
     && cd pg_graphql \
@@ -187,23 +181,24 @@ RUN git clone --depth 1 https://github.com/supabase/pg_graphql.git \
     && cd .. && rm -rf pg_graphql
 
 # ----------------------------------------------------------------------------
-# 15. pgsodium root-key: скрипт generate-on-first-use, ключ хранится в PGDATA.
-#     Без getkey_script postgres FATAL при старте с pgsodium в preload.
-#     Ключ персистентен (переживает рестарты в рамках одного data-тома).
+# 14. vault root-key: скрипт generate-on-first-use (HEX 32 байта), ключ в PGDATA.
+#     vault грузит ключ через vault.getkey_script при старте (preload). Без скрипта
+#     postgres FATAL. Ключ персистентен в рамках одного data-тома.
+#     Формат HEX (не base64!) — vault/pgsodium hex_decode'ят вывод скрипта.
 # ----------------------------------------------------------------------------
-RUN cat > /usr/local/bin/pgsodium-getkey.sh <<'EOF'
+RUN cat > /usr/local/bin/vault-getkey.sh <<'EOF'
 #!/bin/sh
-KEY="${PGDATA:-/var/lib/postgresql/data}/pgsodium.key"
+KEY="${PGDATA:-/var/lib/postgresql/data}/vault_root.key"
 if [ ! -f "$KEY" ]; then
-  /usr/bin/head -c 32 /dev/urandom | /usr/bin/base64 > "$KEY"
+  /usr/bin/head -c 32 /dev/urandom | /usr/bin/od -A n -t x1 | /usr/bin/tr -d ' \n' > "$KEY"
 fi
 /usr/bin/cat "$KEY"
 EOF
-RUN chmod +x /usr/local/bin/pgsodium-getkey.sh
+RUN chmod +x /usr/local/bin/vault-getkey.sh
 
 # ----------------------------------------------------------------------------
-# 16. Очистка тяжёлых инструментов: Rust-тулчейн + C-компилятор + bindgen.
-#     RUNTIME-библиотеки libsodium/libcurl ОСТАВЛЯЕМ (.so-расширений линкуются к ним).
+# 15. Очистка тяжёлых инструментов: Rust-тулчейн + C-компилятор + bindgen.
+#     RUNTIME libsodium/libcurl ОСТАВЛЯЕМ (вместе с -dev: .so расширений линкуются к ним).
 # ----------------------------------------------------------------------------
 RUN rustup self uninstall -y || true \
     && rm -rf /root/.pgrx /root/.cargo \
@@ -215,13 +210,13 @@ WORKDIR /
 RUN rm -rf /build
 
 # ----------------------------------------------------------------------------
-# 17. Профиль конфигурации по тиру (ДОБАВЛЯЕТСЯ к postgresql.conf.sample).
+# 16. Профиль конфигурации по тиру (ДОБАВЛЯЕТСЯ к postgresql.conf.sample).
 # ----------------------------------------------------------------------------
 COPY config/postgresql-${CORTEX_TIER}.conf /tmp/tier.conf
 RUN cat /tmp/tier.conf >> /usr/share/postgresql/postgresql.conf.sample && rm /tmp/tier.conf
 
 # ----------------------------------------------------------------------------
-# 18. SQL-инициализация: оркестратор init.sql + модульные миграции sql/.
+# 17. SQL-инициализация: оркестратор init.sql + модульные миграции sql/.
 # ----------------------------------------------------------------------------
 COPY init.sql /docker-entrypoint-initdb.d/
 COPY sql/    /docker-entrypoint-initdb.d/sql/

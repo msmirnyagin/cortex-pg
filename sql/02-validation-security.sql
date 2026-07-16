@@ -1,7 +1,7 @@
 -- 02. Валидация и безопасность.
--- Требования к preload: pgsodium (для Server Key Management / TCE / vault).
--- В supabase-образе серверный ключ уже настроен. На чистом bookworm нужно
--- shared_preload_libraries='pgsodium' + pgsodium.getkey_script.
+-- Требования к preload: supabase_vault (шифрование секретов; грузит корневой
+-- ключ через vault.getkey_script при старте, ТОЛЬКО из preload).
+-- pgsodium УБРАН (Supabase deprecated) — vault v0.3.1 самодостаточен.
 \echo '== 02 validation & security =='
 
 DO $$ BEGIN
@@ -11,12 +11,9 @@ EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pg_jsonschema: %', SQLERRM; END $$;
 -- Для повторных проверок быстрее тип 'jsonschema' + json_matches_compiled_schema (~1.8x).
 
 DO $$ BEGIN
-  CREATE EXTENSION IF NOT EXISTS pgsodium;          -- схема 'pgsodium' (строго), TCE, key mgmt
-EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pgsodium: %', SQLERRM; END $$;
-
-DO $$ BEGIN
-  CREATE EXTENSION IF NOT EXISTS supabase_vault;  -- vault.secrets / vault.decrypted_secrets
+  CREATE EXTENSION IF NOT EXISTS supabase_vault;    -- vault.secrets / vault.decrypted_secrets
 EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'supabase_vault: %', SQLERRM; END $$;
--- vault v0.3.1 — C/PGXS, линкует libsodium сам, больше НЕ зависит от pgsodium.
--- pgsodium создаётся выше отдельно (для SQL-API TCE).
+-- vault v0.3.1 — C/PGXS, линкует libsodium сам, НЕ зависит от pgsodium.
+-- Шифрование работает только если supabase_vault в shared_preload_libraries
+-- (иначе _PG_init не грузит корневой ключ).
 -- Рекомендация: ALTER SYSTEM SET log_statement = 'none', чтобы секреты не утекали в логи.

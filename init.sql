@@ -4,13 +4,14 @@
 -- Запускается docker-entrypoint-initdb.d при первом старте (POSTGRES_DB=postgres).
 -- Порядок важен из-за зависимостей:
 --   01 vectors        — pg_turboquant требует 'vector' ПЕРВЫМ
---   02 security       — supabase_vault CASCADE тянет pgsodium
+--   02 security       — supabase_vault (без CASCADE; pgsodium убран)
 --   05 orchestration  — index_advisor CASCADE тянет hypopg
 -- Каждое CREATE EXTENSION обёрнуто в DO/EXCEPTION → NOTICE: отсутствующее
 -- (не собранное из исходников) расширение не прерывает инициализацию.
 --
 -- Требуется в shared_preload_libraries (настраивается в образе):
---   pg_cron, pg_durable, pg_net, pgsodium   (опц. pg_hint_plan, pg_stat_statements)
+--   pg_cron, pg_durable, pg_net, supabase_vault   (опц. pg_hint_plan, pg_stat_statements)
+--   supabase_vault: шифрование работает только из preload (_PG_init грузит ключ)
 
 \set ON_ERROR_STOP off
 \ir sql/00-base.sql

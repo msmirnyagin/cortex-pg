@@ -14,9 +14,9 @@ ORDER BY extname;
 --   pg_durable      .deb v0.2.2 (Microsoft)
 --   pg_search       .deb v0.24.1 (ParadeDB)
 --   pgmq, index_advisor, pg_net — SQL/C из исходников
---   pgsodium, supabase_vault, pg_jsonschema, pg_graphql — pgrx/Rust
+--   supabase_vault — C/PGXS (секреты); pg_jsonschema, pg_graphql — pgrx/Rust
 
-\echo '== shared_preload_libraries (min: pgsodium; max: pg_cron,pg_durable,pg_search,pgsodium,pg_net) =='
+\echo '== shared_preload_libraries (min: supabase_vault; max: pg_cron,pg_durable,pg_search,supabase_vault,pg_net) ==' 
 SELECT name, setting FROM pg_settings WHERE name = 'shared_preload_libraries';
 
 \echo '== background worker slots =='
