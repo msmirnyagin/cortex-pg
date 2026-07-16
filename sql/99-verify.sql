@@ -9,12 +9,16 @@ ORDER BY extname;
 
 -- Ожидаемые версии (база postgres:17-bookworm + PGDG apt):
 --   vector          0.8.1    (пин ради совместимости с pg_turboquant)
---   age, pg_cron, rum, hypopg, http, pg_hint_plan, pgroonga  — из apt
+--   age, pg_cron, rum, hypopg, http, pg_hint_plan, pgroonga, postgis  — из apt
 --   pg_turboquant   из исходников (C/PGXS)
 --   pg_durable      .deb v0.2.2 (Microsoft)
 --   pg_search       .deb v0.24.1 (ParadeDB)
 --   pgmq, index_advisor, pg_net — SQL/C из исходников
 --   supabase_vault — C/PGXS (секреты); pg_jsonschema, pg_graphql — pgrx/Rust
+--
+-- postgis — ОПЦИОНАЛЬНЫЙ: пакет в образе, но НЕ создаётся автоматически.
+--   Для location-aware агентов: CREATE EXTENSION postgis; в схеме geo.
+--   (геозоны, ST_DWithin, GiST-индексы по координатам lat/lon)
 
 \echo '== shared_preload_libraries (min: supabase_vault; max: pg_cron,pg_durable,pg_search,supabase_vault,pg_net) ==' 
 SELECT name, setting FROM pg_settings WHERE name = 'shared_preload_libraries';

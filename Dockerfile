@@ -5,7 +5,7 @@
 # База: официальный postgres:17-bookworm (репозиторий PGDG уже подключён в образе).
 #
 # Полный стек расширений (методы сборки ВЕРИФИЦИРОВАНЫ по Cargo.toml/Makefile):
-#   • apt/PGDG:      age, pg_cron, hypopg, http, pg_hint_plan, rum, plpython3
+#   • apt/PGDG:      age, pg_cron, hypopg, http, pg_hint_plan, rum, plpython3, postgis
 #   • apt/Groonga:   pgroonga
 #   • source C/PGXS: pgvector v0.8.1, pg_turboquant, pg_net, supabase_vault
 #   • .deb:          pg_durable (Microsoft), pg_search (ParadeDB)
@@ -48,6 +48,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       postgresql-17-http \
       postgresql-17-pg-hint-plan \
       postgresql-17-rum \
+      # --- PostGIS: геоданные для location-aware агентов (geo-fencing, ST_DWithin). ---
+      #     ОПЦИОНАЛЬНО: пакет в образе, но CREATE EXTENSION postgis — по требованию ---
+      #     (в схеме geo), НЕ входит в базовый init.sql. --no-install-recommends ---
+      #     отсекает GDAL/растры (~60 МБ вместо 200+). ---
+      postgresql-17-postgis-3 \
+      postgresql-17-postgis-3-scripts \
       # --- инструменты для сборки C-расширений ---
       build-essential \
       postgresql-server-dev-17 \
