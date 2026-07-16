@@ -12,11 +12,11 @@ ORDER BY extname;
 --   age, pg_cron, rum, hypopg, http, pg_hint_plan, pgroonga  — из apt
 --   pg_turboquant   из исходников (C/PGXS)
 --   pg_durable      .deb v0.2.2 (Microsoft)
--- ОТСУТСТВУЮТ (ЭТАП 2b/2c / pgrx — выводится NOTICE, не критично):
---   pgsodium, supabase_vault, pg_jsonschema, pg_graphql, pg_net
--- Установлены в Stage 2a: pg_search (.deb), pgmq (SQL), index_advisor (SQL)
+--   pg_search       .deb v0.24.1 (ParadeDB)
+--   pgmq, index_advisor, pg_net — SQL/C из исходников
+--   pgsodium, supabase_vault, pg_jsonschema, pg_graphql — pgrx/Rust
 
-\echo '== shared_preload_libraries (ожидается pg_cron,pg_durable) =='
+\echo '== shared_preload_libraries (min: pgsodium; max: pg_cron,pg_durable,pg_search,pgsodium,pg_net) =='
 SELECT name, setting FROM pg_settings WHERE name = 'shared_preload_libraries';
 
 \echo '== background worker slots =='

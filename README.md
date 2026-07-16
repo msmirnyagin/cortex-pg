@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/msmirnyagin/cortex-pg/actions/workflows/build.yml/badge.svg)](https://github.com/msmirnyagin/cortex-pg/actions/workflows/build.yml)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791?logo=postgresql&logoColor=white)
-![Stage](https://img.shields.io/badge/stage-1%20base%20%E2%9C%93-2ea44f)
+![Stage](https://img.shields.io/badge/stage-2%20complete%20%E2%9C%93-2ea44f)
 ![Architecture](https://img.shields.io/badge/arch-amd64%20Linux-blue)
 
 </div>
@@ -54,11 +54,11 @@
 | **Оркестрация** | `hypopg`, `index_advisor` *(Stage 2)* | apt/— | виртуальные индексы, советник |
 | **Языки** | `plpython3u` | apt (Debian) | Python в БД + `baml-py` |
 
-### 🚧 Stage 2 — отложено (pgrx/Rust-тулчейн)
+### Источники установки
 
-`pgsodium`, `supabase_vault`, `pg_jsonschema`, `pg_graphql`, `pg_search`, `pgmq`, `pg_net`, `index_advisor`. Эти расширения требуют тяжёлой `cargo pgrx`-сборки и добавляются отдельным этапом. До их установки соответствующие миграции тихо пропускаются (`NOTICE`).
+Все расширения установлены. По способу установки: `.deb` (pg_durable, pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pgsodium, supabase_vault, pg_jsonschema, pg_graphql), pip (baml-py).
 
-> **Важно:** пока Stage 2 не завершён, `pgsodium` и `pg_net` **убраны** из `shared_preload_libraries` — иначе Postgres падает при старте (нет `.so`). Они вернутся автоматически после установки.
+> **pgsodium:** для работы TCE/vault требует корневой ключ. Образ содержит getkey-скрипт, который генерирует ключ при первом старте и хранит его в PGDATA (`$PGDATA/pgsodium.key`). Ключ персистентен в рамках одного data-тома — при пересоздании тома генерируется новый.
 
 ---
 
@@ -71,7 +71,7 @@
 | `shared_buffers` | 192 МБ | 512 МБ |
 | `max_connections` | 12 | 25 |
 | Параллелизм | выкл (1 CPU) | 2 воркера на gather |
-| `shared_preload_libraries` | *(пусто — экономия RAM)* | `pg_cron, pg_durable` |
+| `shared_preload_libraries` | `pgsodium` | `pg_cron, pg_durable, pg_search, pgsodium, pg_net` |
 | Назначение | эконом-режим, оркестрация в приложении | полный стек |
 
 На обоих tier-ах поверх Postgres **обязательно** поднимается PgBouncer (transaction-mode), чтобы защитить сервер от коннект-штормов агентов.
@@ -182,8 +182,8 @@ docker build --build-arg CORTEX_TIER=min -t cortex-pg:min .
 ## Roadmap
 
 - [x] **Stage 1** — надёжная база: apt + source + `.deb`, CI зелёный
-- [ ] **Stage 2** — pgrx/Rust-расширения (pgsodium, vault, pg_jsonschema, pg_graphql, pg_search, pgmq, pg_net); вернуть preload
-- [ ] **arm64** — source-build `pg_durable` для локальной разработки на Apple Silicon
+- [x] **Stage 2** — pgrx/Rust-расширения (pgsodium, vault, pg_jsonschema, pg_graphql) + pg_search/pgmq/pg_net/index_advisor; preload восстановлен
+- [ ] **arm64** — source-build `pg_durable`/`pg_search` для локальной разработки на Apple Silicon
 - [ ] ** HEALTHCHECK + docker-compose** — готовый compose с PgBouncer sidecar
 - [ ] **Тесты** — smoke-тест расширений в CI после сборки
 
