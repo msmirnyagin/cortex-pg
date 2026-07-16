@@ -41,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       flex \
       git \
       wget \
+      curl \
       ca-certificates \
       # --- Python: BAML (baml-py) вызывается из тел функций plpython3u ---
       python3 \
