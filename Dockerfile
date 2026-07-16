@@ -4,24 +4,26 @@
 # Целевые серверы: слабые amd64 Linux VPS (Tier 1: 1 ГБ/1CPU; Tier 2: 2 ГБ/4CPU).
 # База: официальный postgres:17-bookworm (репозиторий PGDG уже подключён в образе).
 #
-# Полный стек расширений:
+# Полный стек расширений (методы сборки ВЕРИФИЦИРОВАНЫ по Cargo.toml/Makefile):
 #   • apt/PGDG:      age, pg_cron, hypopg, http, pg_hint_plan, rum, plpython3
 #   • apt/Groonga:   pgroonga
-#   • source C/PGXS: pgvector v0.8.1, pg_turboquant, pg_net
+#   • source C/PGXS: pgvector v0.8.1, pg_turboquant, pg_net, pgsodium, supabase_vault
 #   • .deb:          pg_durable (Microsoft), pg_search (ParadeDB)
 #   • SQL/PGXS:      pgmq, index_advisor
-#   • pgrx/Rust:     pgsodium, supabase_vault, pg_jsonschema, pg_graphql
+#   • pgrx/Rust:     pg_jsonschema, pg_graphql   ← только эти 2
 #   • pip:           baml-py (для plpython3u)
 #
 # ПОРЯДОК СБОРКИ: лёгкое → тяжёлое (ради кеширования слоёв GHA).
-#   1-6   apt / .deb / SQL / pip   — быстрые, надёжные, кешируются в первую очередь
-#   7-9   C/PGXS                   — средние (компиляция C)
-#   10-15 Rust/pgrx                — ТЯЖЁЛЫЕ (cargo), основной риск версий pgrx
-# Если Rust-блок упадёт, лёгкие слои уже в кеше → пересоберётся только Rust.
+#   1-6   apt / .deb / SQL / pip   — быстрые, надёжные
+#   7-11  C/PGXS                   — pgvector, turboquant, pg_net, pgsodium, vault
+#   12-14 Rust/pgrx                — pg_jsonschema, pg_graphql (самый тяжёлый блок)
 #
-# ⚠️ ЗОНА РИСКА (pgrx): версии pgrx в Cargo.toml каждого supabase-расширения
-#    могут не совпасть с cargo-pgrx CLI. Первая CI-сборка выявит несовпадения;
-#    фикс — пин cargo-pgrx@<version> под конкретное расширение.
+# pgrx: pg_jsonschema=0.16.0, pg_graphql==0.16.1 → cargo-pgrx ПИН к 0.16.1.
+#   (cargo-pgrx latest=0.19.1 НЕсовместим с lib 0.16.x — без пина сборка упадёт.)
+#
+# ПРИМЕЧАНИЕ: pgsodium помечен Supabase как deprecated, но оставлен — он
+#   единственный даёт SQL-API для TCE (transparent column encryption). vault
+#   v0.3.1 больше НЕ зависит от pgsodium (линкует libsodium сам, vendored crypto).
 #
 FROM postgres:17-bookworm
 
@@ -45,7 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       postgresql-17-http \
       postgresql-17-pg-hint-plan \
       postgresql-17-rum \
-      # --- инструменты для сборки C-расширений (pgvector, pg_turboquant, pg_net) ---
+      # --- инструменты для сборки C-расширений ---
       build-essential \
       postgresql-server-dev-17 \
       bison \
@@ -57,12 +59,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # --- Python: BAML (baml-py) вызывается из тел функций plpython3u ---
       python3 \
       python3-pip \
-      # --- pgrx/Rust-сборка: bindgen (libclang), libsodium (pgsodium), libcurl (pg_net) ---
+      # --- libsodium: pgsodium + supabase_vault (C, SHLIB_LINK=-lsodium) ---
+      libsodium-dev \
+      # --- libcurl: pg_net (background worker) ---
+      libcurl4-openssl-dev \
+      # --- pgrx/bindgen: только pg_jsonschema + pg_graphql ---
       pkg-config \
       clang \
       libclang-dev \
-      libsodium-dev \
-      libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ----------------------------------------------------------------------------
@@ -112,7 +116,7 @@ RUN git clone --depth 1 https://github.com/supabase/index_advisor.git \
 RUN pip install --break-system-packages --no-cache-dir baml-py
 
 # ============================================================================
-# C/PGXS-СБОРКИ (средняя тяжесть: компиляция C)
+# C/PGXS-СБОРКИ (средняя тяжесть: компиляция C, линковка libsodium/libcurl)
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -135,38 +139,39 @@ RUN git clone https://github.com/mayflower/pg_turboquant.git \
 RUN git clone --depth 1 https://github.com/supabase/pg_net.git \
     && cd pg_net && make && make install && cd .. && rm -rf pg_net
 
+# ----------------------------------------------------------------------------
+# 10. pgsodium — крипто-ядро (C/PGXS + libsodium). SQL-API для TCE.
+#     Стандартный PGXS: MODULE_big=pgsodium, SHLIB_LINK=-lsodium.
+#     Требует shared_preload_libraries='pgsodium' + getkey_script (секция 15).
+# ----------------------------------------------------------------------------
+RUN git clone --depth 1 https://github.com/michelp/pgsodium.git \
+    && cd pgsodium && make && make install && cd .. && rm -rf pgsodium
+
+# ----------------------------------------------------------------------------
+# 11. supabase_vault — секреты (C/PGXS + libsodium). НЕ pgrx, НЕ зависит от pgsodium.
+#     v0.3.1: SHLIB_LINK=-lsodium, vendored crypto (crypto_aead_det_xchacha20).
+# ----------------------------------------------------------------------------
+RUN git clone --depth 1 https://github.com/supabase/vault.git \
+    && cd vault && make && make install && cd .. && rm -rf vault
+
 # ============================================================================
-# ТЯЖЁЛЫЕ ШАГИ: Rust/pgrx (основной риск, кешируется последним)
+# ТЯЖЁЛЫЕ ШАГИ: Rust/pgrx — только pg_jsonschema + pg_graphql
 # ============================================================================
 
 # ----------------------------------------------------------------------------
-# 10. Rust/pgrx-тулчейн.
+# 12. Rust/pgrx-тулчейн.
 #     bookworm rustc слишком стар для pgrx → свежий stable через rustup.
+#     cargo-pgrx ПИН к 0.16.1: pg_jsonschema=pgrx 0.16.0, pg_graphql==pgrx 0.16.1.
+#     (latest cargo-pgrx=0.19.1 несовместим с lib 0.16.x.)
 #     pgrx init регистрирует системный PG17 (без скачивания/сборки PG).
 # ----------------------------------------------------------------------------
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN cargo install --locked cargo-pgrx \
+RUN cargo install --locked cargo-pgrx@0.16.1 \
     && cargo pgrx init --pg17=/usr/lib/postgresql/17/bin/pg_config
 
 # ----------------------------------------------------------------------------
-# 11. pgsodium — крипто-ядро (pgrx + libsodium). База для supabase_vault.
-# ----------------------------------------------------------------------------
-RUN git clone --depth 1 https://github.com/michelp/pgsodium.git \
-    && cd pgsodium \
-    && cargo pgrx install --release --pg-config /usr/lib/postgresql/17/bin/pg_config \
-    && cd .. && rm -rf pgsodium
-
-# ----------------------------------------------------------------------------
-# 12. supabase_vault — секреты (pgrx, зависит от pgsodium).
-# ----------------------------------------------------------------------------
-RUN git clone --depth 1 https://github.com/supabase/supabase_vault.git \
-    && cd supabase_vault \
-    && cargo pgrx install --release --pg-config /usr/lib/postgresql/17/bin/pg_config \
-    && cd .. && rm -rf supabase_vault
-
-# ----------------------------------------------------------------------------
-# 13. pg_jsonschema — JSON Schema валидация (pgrx).
+# 13. pg_jsonschema — JSON Schema валидация (pgrx 0.16.0).
 # ----------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/supabase/pg_jsonschema.git \
     && cd pg_jsonschema \
@@ -174,7 +179,7 @@ RUN git clone --depth 1 https://github.com/supabase/pg_jsonschema.git \
     && cd .. && rm -rf pg_jsonschema
 
 # ----------------------------------------------------------------------------
-# 14. pg_graphql — GraphQL резолвер (pgrx).
+# 14. pg_graphql — GraphQL резолвер (pgrx =0.16.1, edition 2024).
 # ----------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/supabase/pg_graphql.git \
     && cd pg_graphql \
@@ -197,7 +202,7 @@ EOF
 RUN chmod +x /usr/local/bin/pgsodium-getkey.sh
 
 # ----------------------------------------------------------------------------
-# 16. Очистка тяжёлых инструментов: Rust-тулчейн + C-компилятор.
+# 16. Очистка тяжёлых инструментов: Rust-тулчейн + C-компилятор + bindgen.
 #     RUNTIME-библиотеки libsodium/libcurl ОСТАВЛЯЕМ (.so-расширений линкуются к ним).
 # ----------------------------------------------------------------------------
 RUN rustup self uninstall -y || true \

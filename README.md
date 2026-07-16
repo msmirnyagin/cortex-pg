@@ -56,7 +56,7 @@
 
 ### Источники установки
 
-Все расширения установлены. По способу установки: `.deb` (pg_durable, pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pgsodium, supabase_vault, pg_jsonschema, pg_graphql), pip (baml-py).
+Все расширения установлены. По способу установки: `.deb` (pg_durable, pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net, pgsodium, supabase_vault), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pg_jsonschema, pg_graphql), pip (baml-py).
 
 > **pgsodium:** для работы TCE/vault требует корневой ключ. Образ содержит getkey-скрипт, который генерирует ключ при первом старте и хранит его в PGDATA (`$PGDATA/pgsodium.key`). Ключ персистентен в рамках одного data-тома — при пересоздании тома генерируется новый.
 
