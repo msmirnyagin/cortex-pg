@@ -55,7 +55,7 @@ RUN wget -qO /tmp/groonga.deb https://packages.groonga.org/debian/groonga-apt-so
     && apt-get update \
     && apt-get install -y --no-install-recommends /tmp/groonga.deb \
     && apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-17-pgroonga \
+    && apt-get install -y --no-install-recommends postgresql-17-pgdg-pgroonga \
     && rm -f /tmp/groonga.deb \
     && rm -rf /var/lib/apt/lists/*
 
