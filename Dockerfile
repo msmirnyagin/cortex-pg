@@ -25,7 +25,9 @@ ARG CORTEX_TIER=max
 # ----------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
       # --- расширения PGDG (CREATE EXTENSION сработает сразу) ---
-      postgresql-17-plpython3 \
+      # plpython3 — пакет из Debian main (НЕ PGDG), поэтому имя postgresql-plpython3-17,
+      # а не postgresql-17-plpython3.
+      postgresql-plpython3-17 \
       postgresql-17-age \
       postgresql-17-cron \
       postgresql-17-hypopg \
