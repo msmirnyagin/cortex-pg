@@ -89,7 +89,28 @@ RUN wget -qO /tmp/pg-durable.deb \
     && rm -f /tmp/pg-durable.deb
 
 # ----------------------------------------------------------------------------
-# 6. BAML (baml-py) — глобально для системного python3 (plpython3u вызывает его).
+# 6. Stage 2a: лёгкие расширения (.deb + чистый SQL), без Rust.
+# ----------------------------------------------------------------------------
+# 6a. pg_search (ParadeDB BM25 / Tantivy) — готовый .deb с GitHub Releases.
+#     amd64-only. Требует shared_preload_libraries='pg_search' (см. конфиги).
+RUN wget -qO /tmp/pg-search.deb \
+      https://github.com/paradedb/paradedb/releases/download/v0.24.1/postgresql-17-pg-search_0.24.1-1PARADEDB-bookworm_amd64.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/pg-search.deb \
+    && rm -f /tmp/pg-search.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# 6b. pgmq — чистая SQL-очередь (темbo-io). PGXS: make install ставит схему pgmq.
+#     Не путать с pgmq_ext (pgrx, опционально) — нам нужна SQL-часть.
+RUN git clone --depth 1 https://github.com/tembo-io/pgmq.git \
+    && cd pgmq && make && make install && cd .. && rm -rf pgmq
+
+# 6c. index_advisor (supabase) — чистый SQL/PGXS (рекомендация индексов).
+RUN git clone --depth 1 https://github.com/supabase/index_advisor.git \
+    && cd index_advisor && make && make install && cd .. && rm -rf index_advisor
+
+# ----------------------------------------------------------------------------
+# 7. BAML (baml-py) — глобально для системного python3 (plpython3u вызывает его).
 #    --break-system-packages: обход PEP 668 в Debian 12 (bookworm).
 # ----------------------------------------------------------------------------
 RUN pip install --break-system-packages --no-cache-dir baml-py
