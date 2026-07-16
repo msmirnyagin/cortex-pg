@@ -11,6 +11,7 @@ on:
       - 'Dockerfile'
       - 'init.sql'
       - 'sql/**'
+      - 'config/**'          # tier-конфиги пекутся в образ (COPY)
       - '.github/workflows/build.yml'
   workflow_dispatch:        # ручной запуск с выбором тира
     inputs:
@@ -55,6 +56,57 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short              # ghcr.io/.../cortex-pg:sha-abcdef1
+
+      - name: Build local image (для smoke-теста)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: cortex-pg:smoke
+          build-args: |
+            CORTEX_TIER=${{ github.event.inputs.tier || 'max' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (boot + расширения + pgsodium)
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke \
+            -e POSTGRES_PASSWORD=test -e POSTGRES_DB=postgres \
+            cortex-pg:smoke
+
+          # pg_isready зелёный ⇒ postgres поднялся ⇒ все shared_preload_libraries
+          # (.so) загрузились, включая pgsodium + getkey_script.
+          echo "Ожидание готовности postgres (таймаут 120с)..."
+          if ! timeout 120 bash -c 'until docker exec smoke pg_isready -U postgres -d postgres >/dev/null 2>&1; do sleep 2; done'; then
+            echo "❌ postgres не стартовал за 120с. Логи контейнера:"
+            docker logs smoke || true
+            exit 1
+          fi
+          echo "✓ postgres стартовал — все preload-библиотеки загружены"
+
+          echo "== 99-verify.sql =="
+          docker exec smoke psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -f /docker-entrypoint-initdb.d/sql/99-verify.sql
+
+          echo "== assertions =="
+          EXT_COUNT=$(docker exec smoke psql -U postgres -d postgres -tAc \
+            "SELECT count(*) FROM pg_extension WHERE extname IN \
+             ('vector','pg_turboquant','age','pgsodium','pg_search','pgmq','rum',\
+              'pg_net','index_advisor','supabase_vault','pg_jsonschema','pg_graphql')")
+          echo "расширений из ядpa: $EXT_COUNT (нужно >= 9)"
+          [ "$EXT_COUNT" -ge 9 ] || { echo "❌ слишком мало расширений создалось"; docker logs smoke --tail 50 || true; exit 1; }
+
+          PGSODIUM_SCHEMA=$(docker exec smoke psql -U postgres -d postgres -tAc \
+            "SELECT count(*) FROM information_schema.schemata WHERE schema_name='pgsodium'")
+          echo "pgsodium schema: $PGSODIUM_SCHEMA"
+          [ "$PGSODIUM_SCHEMA" -eq 1 ] || { echo "❌ pgsodium schema не создан (TCE/vault не работают)"; exit 1; }
+
+          echo "✓ smoke-тест пройден"
+          docker stop smoke || true
 
       - name: Build and push
         uses: docker/build-push-action@v6
