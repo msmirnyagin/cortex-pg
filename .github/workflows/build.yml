@@ -1,0 +1,71 @@
+# Сборка cortex-pg под linux/amd64 и публикация в GHCR.
+# Нативный amd64-раннер (без эмуляции) — подходит для тяжёлых Rust/C-сборок,
+# которые на слабом VPS или кросс-сборке на Mac заняли бы слишком долго.
+name: build-and-push
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']            # релизные теги → отдельный image-тег
+    paths:
+      - 'Dockerfile'
+      - 'init.sql'
+      - 'sql/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:        # ручной запуск с выбором тира
+    inputs:
+      tier:
+        description: 'Профиль конфига (min = 1GB, max = 2GB)'
+        type: choice
+        default: max
+        options: [min, max]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest   # нативный amd64, без QEMU/Rosetta
+    permissions:
+      contents: read
+      packages: write        # право пушить в GHCR
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # встроенный токен, без доп. секрета
+
+      - name: Docker meta (теги и лейблы)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short              # ghcr.io/.../cortex-pg:sha-abcdef1
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CORTEX_TIER=${{ github.event.inputs.tier || 'max' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
