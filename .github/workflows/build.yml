@@ -45,17 +45,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}   # встроенный токен, без доп. секрета
 
-      - name: Docker meta (теги и лейблы)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short              # ghcr.io/.../cortex-pg:sha-abcdef1
+      # Теги генерируем вручную из github.ref/github.sha (БЕЗ API-запросов).
+      # docker/metadata-action@v5 ранее падал на авариях GitHub API (Unicorn 503
+      # в is_default_branch) — ручной способ неуязвим к сбоям API.
+      # Логика тегов (как раньше): sha-<7>, branch, latest на main, semver на v*.
+      - name: Generate image tags (API-free)
+        id: tags
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="sha-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          TAGS="${IMAGE}:${SHORT_SHA}"
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              VERSION="${GITHUB_REF#refs/tags/v}"
+              TAGS="${TAGS},${IMAGE}:${VERSION}"
+              MAJOR_MINOR="$(printf '%s' "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
+              TAGS="${TAGS},${IMAGE}:${MAJOR_MINOR}"
+              ;;
+            refs/heads/*)
+              BRANCH="${GITHUB_REF#refs/heads/}"
+              BRANCH_TAG="$(printf '%s' "$BRANCH" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
+              TAGS="${TAGS},${IMAGE}:${BRANCH_TAG}"
+              if [ "$BRANCH" = main ] || [ "$BRANCH" = master ]; then
+                TAGS="${TAGS},${IMAGE}:latest"
+              fi
+              ;;
+          esac
+          printf 'tags=%s\n' "$TAGS" >> "$GITHUB_OUTPUT"
+          echo "Сгенерированы теги: $TAGS"
 
       - name: Build local image (для smoke-теста)
         uses: docker/build-push-action@v6
@@ -122,8 +143,10 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             CORTEX_TIER=${{ github.event.inputs.tier || 'max' }}
           cache-from: type=gha
