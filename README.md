@@ -30,33 +30,37 @@
 
 ## Состав расширений
 
-### ✅ Stage 1 — установлено и проверено в CI
+### Установленные расширения (Stage 1 + Stage 2, проверено в CI)
 
 | Категория | Расширение | Источник | Назначение |
 |---|---|---|---|
 | **Векторы** | `vector` (pgvector) v0.8.1 | source (пин) | типы `vector`/`halfvec`, индексы hnsw/ivfflat |
 | **Векторы** | `pg_turboquant` | source (C) | компактный ANN-индекс (×3–4 меньше HNSW) |
-| **Поиск** | `pg_search` *(Stage 2)* | — | BM25 (Tantivy) |
+| **Поиск** | `pg_search` v0.24.1 | .deb (ParadeDB) | BM25 (Tantivy) |
 | **Поиск** | `pgroonga` | apt (Groonga) | мультиязычный FTS, особенно CJK |
 | **Поиск** | `rum` | apt (PGDG) | tsvector + recency без heap scan |
 | **Поиск** | `pg_trgm`, `btree_gin`, `btree_gist` | contrib | триграммы, гибридные индексы |
 | **Графы / API** | `age` (Apache AGE) | apt (PGDG) | openCypher через `cypher()`, тип `agtype` |
-| **Графы / API** | `pg_graphql` *(Stage 2)* | — | GraphQL-резолвер |
+| **Графы / API** | `pg_graphql` | pgrx/Rust | GraphQL-резолвер |
 | **Графы / API** | `http` | apt (PGDG) | синхронные HTTP-запросы из SQL |
-| **Графы / API** | `pg_net` *(Stage 2)* | — | асинхронные HTTP (webhooks) |
+| **Графы / API** | `pg_net` | source (C) | асинхронные HTTP (webhooks) |
 | **Безопасность** | `pgcrypto` | contrib | digest/hmac, bcrypt, PGP |
-| **Безопасность** | `pg_jsonschema` *(Stage 2)* | — | `json_matches_schema()` |
-| **Безопасность** | `supabase_vault` *(Stage 2)* | source (C) | шифрованное хранилище секретов (vault.secrets) |
+| **Безопасность** | `pg_jsonschema` | pgrx/Rust | `json_matches_schema()` |
+| **Безопасность** | `supabase_vault` v0.3.1 | source (C) | шифрованное хранилище секретов (vault.secrets) |
 | **Оркестрация** | `pg_cron` | apt (PGDG) | cron-задачи внутри БД |
-| **Оркестрация** | `pg_durable` | .deb (Microsoft) | durable-функции/агенты |
-| **Оркестрация** | `pgmq` *(Stage 2)* | — | SQL-очередь (брокер для агентов) |
+| **Оркестрация** | `pg_durable` v0.2.2 | .deb (Microsoft) | durable-функции/агенты |
+| **Оркестрация** | `pgmq` | SQL/PGXS | SQL-очередь (брокер для агентов) |
 | **Оркестрация** | `pg_hint_plan` | apt (PGDG) | хинты плана запроса |
-| **Оркестрация** | `hypopg`, `index_advisor` *(Stage 2)* | apt/— | виртуальные индексы, советник |
+| **Оркестрация** | `hypopg` | apt (PGDG) | виртуальные индексы (cost-оценка) |
+| **Оркестрация** | `index_advisor` | SQL/PGXS | советник по индексам |
+| **Гео** | `postgis` *(opt-in)* | apt (PGDG) | геозоны, `ST_DWithin`, GiST по lat/lon |
 | **Языки** | `plpython3u` | apt (Debian) | Python в БД + `baml-py` |
 
 ### Источники установки
 
-Все расширения установлены. По способу установки: `.deb` (pg_durable, pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net, supabase_vault), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pg_jsonschema, pg_graphql), pip (baml-py).
+Все расширения установлены. По способу установки: `.deb` (pg_durable, pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum, postgis), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net, supabase_vault), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pg_jsonschema, pg_graphql), pip (baml-py).
+
+> **PostGIS — опциональный (opt-in).** Пакет в образе для обоих тиров, но `CREATE EXTENSION postgis` выполняется по требованию (в схеме `geo`) и не входит в базовые миграции `init.sql`. Preload не нужен — в простое не потребляет RAM. Назначение: location-aware агенты (геозоны, близость, `ST_DWithin`, пространственные GiST-индексы).
 
 > **supabase_vault:** для шифрования секретов требует корневой ключ. Образ содержит getkey-скрипт, который генерирует HEX-ключ (32 байта) при первом старте и хранит его в PGDATA (`$PGDATA/vault_root.key`). Ключ грузится при старте **только** если `supabase_vault` в `shared_preload_libraries` (иначе `_PG_init` не выполнит загрузку ключа). Ключ персистентен в рамках одного data-тома — при пересоздании тома генерируется новый.
 >
@@ -140,7 +144,7 @@ flowchart LR
 
 ```
 cortex-pg/
-├── Dockerfile                 # Сборка Stage 1: apt + source + .deb
+├── Dockerfile                 # Сборка Stage 1+2: apt/PGDG + source C + .deb + pgrx/Rust
 ├── init.sql                   # Оркестратор миграций (порядок по зависимостям)
 ├── sql/
 │   ├── 00-base.sql            # contrib: pgcrypto, pg_trgm, btree_gin/gist...
@@ -186,6 +190,8 @@ docker build --build-arg CORTEX_TIER=min -t cortex-pg:min .
 - [x] **Stage 1** — надёжная база: apt + source + `.deb`, CI зелёный
 - [x] **Stage 2** — pgrx/Rust (pg_jsonschema, pg_graphql) + pg_search/pgmq/pg_net/index_advisor/vault; preload восстановлен
 - [x] **Тесты** — smoke-тест в CI: старт контейнера + проверка расширений + раунд-трип vault.create_secret
+- [x] **PostGIS** — opt-in гео-расширение для location-aware агентов (apt, без preload)
+- [x] **Надёжный CI** — генерация тегов без API-запросов (устойчив к сбоям GitHub), actions на Node 24
 - [ ] **arm64** — source-build `pg_durable`/`pg_search` для локальной разработки на Apple Silicon
 - [ ] ** HEALTHCHECK + docker-compose** — готовый compose с PgBouncer sidecar
 
