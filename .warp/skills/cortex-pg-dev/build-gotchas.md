@@ -68,6 +68,38 @@ pgroonga ставится из отдельного apt-repo Groonga (не PGDG)
 НО оставляем runtime-библиотеки: `libsodium23`/`libsodium-dev`, `libcurl4`/`libcurl4-openssl-dev`.
 `.so` расширений динамически линкуются к ним. Удаление → FATAL при загрузке расширения.
 
+## 8a. ⚠️ Почему `RUN purge` НЕ уменьшает образ — нужен multi-stage
+
+В слоистой overlay-FS (Docker/OCI) **каждый `RUN` — новый слой поверх**.
+`RUN rustup uninstall` / `apt purge --auto-remove clang` в слое N+1 создаёт
+**whiteout-метку**, но файлы из слоя N физически остаются в образе. Образ от
+этого **не худеет** — тулчейн остаётся замаскированным, но на диске.
+
+```dockerfile
+# ❌ НЕ работает для уменьшения размера:
+RUN cargo install ...            # слой N:   +1.5 ГБ rust/cargo
+RUN rustup self uninstall -y     # слой N+1: whiteout, но 1.5 ГБ всё ещё в образе
+```
+
+**Единственный способ реально убрать тулчейн** — multi-stage: собирать в
+`builder`, в финал копировать только runtime-артефакты через `COPY --from=builder`.
+Builder-стейдж (с Rust/clang/server-dev) целиком отбрасывается.
+
+```dockerfile
+FROM postgres:17-bookworm AS builder
+RUN apt-get install ... clang libclang-dev postgresql-server-dev-17
+RUN cargo pgrx install ...   # тулчейн живёт ТОЛЬКО здесь
+
+FROM postgres:17-bookworm
+COPY --from=builder /usr/lib/postgresql/17/lib/ /usr/lib/postgresql/17/lib/
+COPY --from=builder /usr/share/postgresql/17/extension/ /usr/share/postgresql/17/extension/
+# ← Rust/clang/server-dev сюда НЕ попадают
+```
+
+См. актуальный `Dockerfile` (2 стадии). Ловушка multi-stage: **runtime-либы**
+(`libsodium23`, `libcurl4`) надо явно ставить в финальном стейдже — `--auto-remove`
+там использовать нельзя (снёс бы их → FATAL на загрузке `.so`).
+
 ## 9. plpython3u + baml-py
 
 `baml-py` ставится через pip **глобально** для системного python3:
