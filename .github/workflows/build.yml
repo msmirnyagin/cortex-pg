@@ -1,12 +1,14 @@
-# Сборка cortex-pg под linux/amd64 и публикация в GHCR.
-# Нативный amd64-раннер (без эмуляции) — подходит для тяжёлых Rust/C-сборок,
-# которые на слабом VPS или кросс-сборке на Mac заняли бы слишком долго.
+# Сборка cortex-pg под linux/amd64 + linux/arm64 и публикация в GHCR.
+# Нативные раннеры под каждую арх (без QEMU) — критично для тяжёлых Rust/C-сборок.
+#   • build    — matrix по арх: каждая арх собирается, smoke-тестируется, пушит
+#                арх-специфичный тег sha-<short>-<arch>.
+#   • manifest — собирает оба арх-тега в единый multi-arch манифест (latest/main/sha).
 name: build-and-push
 
 on:
   push:
     branches: [main, master]
-    tags: ['v*']            # релизные теги → отдельный image-тег
+    tags: ['v*']            # релизные теги → семверные image-теги
     paths:
       - 'Dockerfile'
       - 'init.sql'
@@ -27,7 +29,16 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest   # нативный amd64, без QEMU/Rosetta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write        # право пушить в GHCR
@@ -45,52 +56,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}   # встроенный токен, без доп. секрета
 
-      # Теги генерируем вручную из github.ref/github.sha (БЕЗ API-запросов).
-      # docker/metadata-action@v5 ранее падал на авариях GitHub API (Unicorn 503
-      # в is_default_branch) — ручной способ неуязвим к сбоям API.
-      # Логика тегов (как раньше): sha-<7>, branch, latest на main, semver на v*.
-      - name: Generate image tags (API-free)
-        id: tags
-        env:
-          GITHUB_REF: ${{ github.ref }}
-          GITHUB_SHA: ${{ github.sha }}
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-        run: |
-          set -euo pipefail
-          SHORT_SHA="sha-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
-          TAGS="${IMAGE}:${SHORT_SHA}"
-          case "$GITHUB_REF" in
-            refs/tags/v*)
-              VERSION="${GITHUB_REF#refs/tags/v}"
-              TAGS="${TAGS},${IMAGE}:${VERSION}"
-              MAJOR_MINOR="$(printf '%s' "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
-              TAGS="${TAGS},${IMAGE}:${MAJOR_MINOR}"
-              ;;
-            refs/heads/*)
-              BRANCH="${GITHUB_REF#refs/heads/}"
-              BRANCH_TAG="$(printf '%s' "$BRANCH" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
-              TAGS="${TAGS},${IMAGE}:${BRANCH_TAG}"
-              if [ "$BRANCH" = main ] || [ "$BRANCH" = master ]; then
-                TAGS="${TAGS},${IMAGE}:latest"
-              fi
-              ;;
-          esac
-          printf 'tags=%s\n' "$TAGS" >> "$GITHUB_OUTPUT"
-          echo "Сгенерированы теги: $TAGS"
+      # Арх-специфичный тег для push (единый multi-arch манифест делает job `manifest`).
+      - name: Compute short sha
+        id: sha
+        run: printf 'short=%s\n' "$(printf '%s' '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
       - name: Build local image (для smoke-теста)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           push: false
           load: true
           tags: cortex-pg:smoke
           build-args: |
             CORTEX_TIER=${{ github.event.inputs.tier || 'max' }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
 
       - name: Smoke test (boot + расширения + vault)
         run: |
@@ -133,21 +116,74 @@ jobs:
             || { echo "❌ vault.create_secret не работает — корневой ключ не загружен (preload/getkey)"; docker logs smoke --tail 50 || true; exit 1; }
           echo "✓ vault шифрует секреты (корневой ключ загружен)"
 
-          echo "✓ smoke-тест пройден"
+          echo "✓ smoke-тест пройден [${{ matrix.arch }}]"
           docker stop smoke || true
 
-      - name: Build and push
+      - name: Build and push (single-arch, arch-suffixed tag)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.sha.outputs.short }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             CORTEX_TIER=${{ github.event.inputs.tier || 'max' }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+  # Объединяет обе арх в единый multi-arch манифест под финальными тегами.
+  # imagetools create строит manifest list, ссылающийся на оба арх-тега.
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate final multi-arch tags + assemble manifest
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="sha-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          SOURCES="${IMAGE}:${SHORT_SHA}-amd64 ${IMAGE}:${SHORT_SHA}-arm64"
+
+          # Базовый multi-arch тег всегда есть: sha-<short> (без суффикса арх).
+          TAGS="${IMAGE}:${SHORT_SHA}"
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              VERSION="${GITHUB_REF#refs/tags/v}"
+              TAGS="${TAGS} ${IMAGE}:${VERSION}"
+              MAJOR_MINOR="$(printf '%s' "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
+              TAGS="${TAGS} ${IMAGE}:${MAJOR_MINOR}"
+              ;;
+            refs/heads/*)
+              BRANCH="${GITHUB_REF#refs/heads/}"
+              BRANCH_TAG="$(printf '%s' "$BRANCH" | sed -E 's/[^a-zA-Z0-9._-]+/-/g')"
+              TAGS="${TAGS} ${IMAGE}:${BRANCH_TAG}"
+              if [ "$BRANCH" = main ] || [ "$BRANCH" = master ]; then
+                TAGS="${TAGS} ${IMAGE}:latest"
+              fi
+              ;;
+          esac
+
+          TAG_ARGS=""
+          for t in $TAGS; do TAG_ARGS="$TAG_ARGS -t $t"; done
+          echo "Создание multi-arch манифеста: tags=[$TAGS] sources=[$SOURCES]"
+          docker buildx imagetools create $TAG_ARGS $SOURCES
+          echo "✓ multi-arch манифест опубликован"

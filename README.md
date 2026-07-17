@@ -9,7 +9,7 @@
 [![CI](https://github.com/msmirnyagin/cortex-pg/actions/workflows/build.yml/badge.svg)](https://github.com/msmirnyagin/cortex-pg/actions/workflows/build.yml)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791?logo=postgresql&logoColor=white)
 ![Stage](https://img.shields.io/badge/stage-2%20complete%20%E2%9C%93-2ea44f)
-![Architecture](https://img.shields.io/badge/arch-amd64%20Linux-blue)
+![Architecture](https://img.shields.io/badge/arch-amd64%20%2B%20arm64-blue)
 
 </div>
 
@@ -48,7 +48,7 @@
 | **Безопасность** | `pg_jsonschema` | pgrx/Rust | `json_matches_schema()` |
 | **Безопасность** | `supabase_vault` v0.3.1 | source (C) | шифрованное хранилище секретов (vault.secrets) |
 | **Оркестрация** | `pg_cron` | apt (PGDG) | cron-задачи внутри БД |
-| **Оркестрация** | `pg_durable` v0.2.2 | .deb (Microsoft) | durable-функции/агенты |
+| **Оркестрация** | `pg_durable` v0.2.2 | source (pgrx) | durable-функции/агенты |
 | **Оркестрация** | `pgmq` | SQL/PGXS | SQL-очередь (брокер для агентов) |
 | **Оркестрация** | `pg_hint_plan` | apt (PGDG) | хинты плана запроса |
 | **Оркестрация** | `hypopg` | apt (PGDG) | виртуальные индексы (cost-оценка) |
@@ -58,7 +58,7 @@
 
 ### Источники установки
 
-Все расширения установлены. По способу установки: `.deb` (pg_durable, pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum, postgis), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net, supabase_vault), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pg_jsonschema, pg_graphql), pip (baml-py).
+Все расширения установлены. По способу установки: `.deb` (pg_search), apt/PGDG (age, pg_cron, hypopg, http, pg_hint_plan, rum, postgis), apt/Groonga (pgroonga), source C/PGXS (pgvector, pg_turboquant, pg_net, supabase_vault), SQL/PGXS (pgmq, index_advisor), pgrx/Rust (pg_jsonschema, pg_graphql, pg_durable), pip (baml-py).
 
 > **PostGIS — опциональный (opt-in).** Пакет в образе для обоих тиров, но `CREATE EXTENSION postgis` выполняется по требованию (в схеме `geo`) и не входит в базовые миграции `init.sql`. Preload не нужен — в простое не потребляет RAM. Назначение: location-aware агенты (геозоны, близость, `ST_DWithin`, пространственные GiST-индексы).
 
@@ -167,7 +167,14 @@ cortex-pg/
 
 ## Сборка и CI
 
-Сборка идёт на нативном amd64-раннере (`ubuntu-latest`) — без QEMU/Rosetta, что критично для тяжёлых C/Rust-сборок. Триггеры:
+Образ собирается под две архитектуры — **linux/amd64** и **linux/arm64** — параллельно на нативных раннерах (без QEMU, что критично для тяжёлых C/Rust-сборок):
+
+- `amd64` → `ubuntu-latest`
+- `arm64` → `ubuntu-24.04-arm` (бесплатно для публичных репозиториев)
+
+Каждая архитектура собирается и проходит smoke-тест независимо, после чего пушит арх-специфичный тег `sha-<short>-<arch>`. Финальный job `manifest` объединяет обе арх в единый multi-arch манифест под тегами `latest`/`sha-<short>` (семвер для релизных тегов `v*`). В итоге `docker pull ...:latest` сам выбирает нужную арх на хосте.
+
+Триггеры:
 
 - **push в `main`** (при изменении `Dockerfile`, `init.sql`, `sql/`) → тег `latest` + `sha-<short>`
 - **тег `v*`** → семверные теги (`v1.0.0`, `1.0`)
@@ -181,7 +188,7 @@ cortex-pg/
 docker build --build-arg CORTEX_TIER=min -t cortex-pg:min .
 ```
 
-> ⚠️ `pg_durable` распространяется как amd64 `.deb` — локальная сборка на Apple Silicon (arm64) упадёт на этом шаге. Для arm64-дева сборка из исходников будет добавлена позже; production-таргет всё равно amd64.
+> 💡 Для другой арх укажите платформу: `docker build --platform linux/arm64 ...`. Все расширения, включая Rust-овые (pg_jsonschema, pg_graphql, pg_durable), собираются из исходников и кросс-архитектурно совместимы.
 
 ---
 
@@ -192,7 +199,7 @@ docker build --build-arg CORTEX_TIER=min -t cortex-pg:min .
 - [x] **Тесты** — smoke-тест в CI: старт контейнера + проверка расширений + раунд-трип vault.create_secret
 - [x] **PostGIS** — opt-in гео-расширение для location-aware агентов (apt, без preload)
 - [x] **Надёжный CI** — генерация тегов без API-запросов (устойчив к сбоям GitHub), actions на Node 24
-- [ ] **arm64** — source-build `pg_durable`/`pg_search` для локальной разработки на Apple Silicon
+- [x] **arm64 (multi-arch)** — сборка под amd64 + arm64 на нативных раннерах; `pg_durable` переведён на source-build (pgrx), `pg_search` параметризован по `TARGETARCH`
 - [ ] ** HEALTHCHECK + docker-compose** — готовый compose с PgBouncer sidecar
 
 ---

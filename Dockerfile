@@ -8,15 +8,19 @@
 #   • apt/PGDG:      age, pg_cron, hypopg, http, pg_hint_plan, rum, plpython3, postgis
 #   • apt/Groonga:   pgroonga
 #   • source C/PGXS: pgvector v0.8.1, pg_turboquant, pg_net, supabase_vault
-#   • .deb:          pg_durable (Microsoft), pg_search (ParadeDB)
+#   • .deb:          pg_search (ParadeDB, arch=TARGETARCH)
 #   • SQL/PGXS:      pgmq, index_advisor
-#   • pgrx/Rust:     pg_jsonschema, pg_graphql   ← только эти 2
+#   • pgrx/Rust:     pg_jsonschema, pg_graphql, pg_durable (Microsoft)
 #   • pip:           baml-py (для plpython3u)
+#
+# MULTI-ARCH: amd64 + arm64 (нативные раннеры CI). pg_search .deb параметризуется
+#   по TARGETARCH; pg_durable собирается из исходников (pgrx =0.16.1) — .deb был
+#   amd64-only. Остальные шаги арх-нейтральны.
 #
 # ПОРЯДОК СБОРКИ: лёгкое → тяжёлое (ради кеширования слоёв GHA).
 #   1-6   apt / .deb / SQL / pip   — быстрые, надёжные
 #   7-10  C/PGXS                   — pgvector, turboquant, pg_net, vault
-#   11-13 Rust/pgrx                — pg_jsonschema, pg_graphql (самый тяжёлый блок)
+#   11-14 Rust/pgrx                — pg_jsonschema, pg_graphql, pg_durable
 #
 # pgrx: pg_jsonschema=0.16.0, pg_graphql==0.16.1 → cargo-pgrx ПИН к 0.16.1.
 #   (cargo-pgrx latest=0.19.1 НЕсовместим с lib 0.16.x — без пина сборка упадёт.)
@@ -89,19 +93,13 @@ RUN wget -q --tries=3 --retry-connrefused --waitretry=3 -O /tmp/groonga.deb \
     && rm -rf /var/lib/apt/lists/*
 
 # ----------------------------------------------------------------------------
-# 3. pg_durable (Microsoft) — готовый amd64 .deb.  ⚠️ amd64-only.
+# 3. pg_search (ParadeDB BM25 / Tantivy) — готовый .deb с GitHub Releases.
+#    MULTI-ARCH: URL параметризуется по TARGETARCH (amd64/arm64 .deb существуют).
+#    Требует shared_preload_libraries='pg_search'.
 # ----------------------------------------------------------------------------
-RUN wget -q --tries=3 --retry-connrefused --waitretry=3 -O /tmp/pg-durable.deb \
-      https://github.com/microsoft/pg_durable/releases/download/v0.2.2/pg-durable-postgresql-17_0.2.2-1_amd64.deb \
-    && dpkg -i /tmp/pg-durable.deb \
-    && rm -f /tmp/pg-durable.deb
-
-# ----------------------------------------------------------------------------
-# 4. pg_search (ParadeDB BM25 / Tantivy) — готовый .deb с GitHub Releases.
-#    amd64-only. Требует shared_preload_libraries='pg_search'.
-# ----------------------------------------------------------------------------
+ARG TARGETARCH
 RUN wget -q --tries=3 --retry-connrefused --waitretry=3 -O /tmp/pg-search.deb \
-      https://github.com/paradedb/paradedb/releases/download/v0.24.1/postgresql-17-pg-search_0.24.1-1PARADEDB-bookworm_amd64.deb \
+      https://github.com/paradedb/paradedb/releases/download/v0.24.1/postgresql-17-pg-search_0.24.1-1PARADEDB-bookworm_${TARGETARCH}.deb \
     && apt-get update \
     && apt-get install -y --no-install-recommends /tmp/pg-search.deb \
     && rm -f /tmp/pg-search.deb \
@@ -158,14 +156,14 @@ RUN git clone --depth 1 https://github.com/supabase/vault.git \
     && cd vault && make && make install && cd .. && rm -rf vault
 
 # ============================================================================
-# ТЯЖЁЛЫЕ ШАГИ: Rust/pgrx — только pg_jsonschema + pg_graphql
+# ТЯЖЁЛЫЕ ШАГИ: Rust/pgrx — pg_jsonschema, pg_graphql, pg_durable
 # ============================================================================
 
 # ----------------------------------------------------------------------------
 # 11. Rust/pgrx-тулчейн.
 #     bookworm rustc слишком стар для pgrx → свежий stable через rustup.
-#     cargo-pgrx ПИН к 0.16.1: pg_jsonschema=pgrx 0.16.0, pg_graphql==pgrx 0.16.1.
-#     (latest cargo-pgrx=0.19.1 несовместим с lib 0.16.x.)
+#     cargo-pgrx ПИН к 0.16.1: pg_jsonschema=pgrx 0.16.0, pg_graphql==pgrx 0.16.1,
+#     pg_durable==pgrx 0.16.1. (latest cargo-pgrx=0.19.1 несовместим с lib 0.16.x.)
 #     pgrx init регистрирует системный PG17 (без скачивания/сборки PG).
 # ----------------------------------------------------------------------------
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -190,7 +188,17 @@ RUN git clone --depth 1 https://github.com/supabase/pg_graphql.git \
     && cd .. && rm -rf pg_graphql
 
 # ----------------------------------------------------------------------------
-# 14. vault root-key: скрипт generate-on-first-use (HEX 32 байта), ключ в PGDATA.
+# 14. pg_durable (Microsoft) v0.2.2 — durable-функции/агенты (pgrx =0.16.1).
+#     Раньше ставился amd64 .deb; теперь из исходников ради multi-arch (arm64).
+#     Тот же тулчейн/команда, что pg_jsonschema/pg_graphql.
+# ----------------------------------------------------------------------------
+RUN git clone --branch v0.2.2 --depth 1 https://github.com/microsoft/pg_durable.git \
+    && cd pg_durable \
+    && cargo pgrx install --release --pg-config /usr/lib/postgresql/17/bin/pg_config \
+    && cd .. && rm -rf pg_durable
+
+# ----------------------------------------------------------------------------
+# 15. vault root-key: скрипт generate-on-first-use (HEX 32 байта), ключ в PGDATA.
 #     vault грузит ключ через vault.getkey_script при старте (preload). Без скрипта
 #     postgres FATAL. Ключ персистентен в рамках одного data-тома.
 #     Формат HEX (не base64!) — vault/pgsodium hex_decode'ят вывод скрипта.
