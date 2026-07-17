@@ -111,9 +111,12 @@ WORKDIR /build
 
 # ----------------------------------------------------------------------------
 # 5. Чистый SQL/PGXS: pgmq (очередь) + index_advisor (советник индексов).
+#    pgmq: Makefile переехал в подкаталог pgmq-extension/ (в корне его больше нет).
+#    index_advisor: Makefile в корне репо (include $(PGXS)).
 # ----------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/tembo-io/pgmq.git \
-    && cd pgmq && make && make install && cd .. && rm -rf pgmq
+    && cd pgmq/pgmq-extension && make && make install \
+    && cd /build && rm -rf pgmq
 RUN git clone --depth 1 https://github.com/supabase/index_advisor.git \
     && cd index_advisor && make && make install && cd .. && rm -rf index_advisor
 
