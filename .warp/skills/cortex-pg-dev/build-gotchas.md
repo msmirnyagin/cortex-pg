@@ -107,3 +107,32 @@ COPY --from=builder /usr/share/postgresql/17/extension/ /usr/share/postgresql/17
 pip install --break-system-packages --no-cache-dir baml-py
 ```
 `--break-system-packages` нужен под bookworm PEP 668. plpython3u вызывает его из тел функций.
+
+## 10. pg_durable крутит FATAL-retry `role "azuresu" does not exist`
+
+**Симптом:** в логах каждые 5 секунд:
+```
+FATAL:  role "azuresu" does not exist
+pg_durable: failed to create management pool (will retry in 5s): ...
+```
+Postgres при этом работает (retry не фатален для сервера) — поэтому CI-зелёный.
+
+**Причина:** background worker pg_durable по умолчанию подключается к management-pool
+как роль `pg_durable.worker_role = 'azuresu'` (Azure-наследие). В образе `postgres:17-bookworm`
+суперпользователь — `postgres`, роли `azuresu` нет.
+
+**Фикс:** в `config/postgresql-max.conf` (где pg_durable в preload):
+```
+pg_durable.worker_role = 'postgres'
+```
+GUC контекста **`postmaster`** → только через `postgresql.conf` + рестарт
+(не per-session, не reload). В min.conf НЕ добавлять — там pg_durable не грузится,
+нераспознанный GUC даст startup-warning.
+
+**Проверено:** после применения worker подключается как `postgres@127.0.0.1`, лог чистый.
+
+## 11. PGDATA на mount point → initdb отказывается
+
+`initdb: directory "/var/lib/postgresql/data" exists but is not empty` — если примонтировать
+volume прямо в `PGDATA`, мешает `lost+found` mount point'а. PGDATA должна быть в **подкаталоге**:
+`PGDATA=/var/lib/postgresql/data/pgdata` (mount target остаётся `/var/lib/postgresql/data`).
